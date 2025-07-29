@@ -1,5 +1,5 @@
 {
-    "name": "cursor-chinese-patcher",
+    "name": "cursor-translation",
     "displayName": "Cursor 中文补丁",
     "description": "一个为 Cursor 提供中文本地化的补丁工具",
     "version": "2.0.0",

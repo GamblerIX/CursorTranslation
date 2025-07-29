@@ -1,17 +1,3 @@
-<!--
- * @description: Cursor 简体中文汉化补丁 - 重构优化版
- * @author: liutq
--->
-<div align="center">
-  <h1>Cursor 简体中文汉化补丁</h1>
-  <p>
-    一个通过脚本直接修补 Cursor 应用文件，从而实现深度汉化的非官方工具。
-  </p>
-  <p>
-    <strong>[重构优化版] - 更稳定、更安全、更易用</strong>
-  </p>
-</div>
-
 # Cursor 中文补丁工具
 
 一个为 Cursor 编辑器提供中文本地化的非官方补丁工具。经过全面重构，提供更好的稳定性和用户体验。
@@ -38,11 +24,11 @@
 ### 1. 下载项目
 
 ```bash
-git clone https://github.com/kociii/cursor-chinese-pack.git
-cd cursor-chinese-pack
+git clone https://github.com/GamblerIX/CursorTranslation.git
+cd CursorTranslation
 ```
 
-或者直接从 [GitHub 仓库](https://github.com/kociii/cursor-chinese-pack) 下载 ZIP 压缩包并解压。
+或者直接从 [GitHub 仓库](https://github.com/GamblerIX/CursorTranslation) 下载 ZIP 压缩包并解压。
 
 ### 2. 安装依赖
 
@@ -221,7 +207,7 @@ npm run apply
 
 ## [贡献]
 
-欢迎提交 PR 或 Issue 来帮助改进本项目。请访问 [GitHub 仓库](https://github.com/kociii/cursor-chinese-pack/issues) 提交问题或建议。
+欢迎提交 PR 或 Issue 来帮助改进本项目。请访问 [GitHub 仓库](https://github.com/GamblerIX/CursorTranslation/issues) 提交问题或建议。
 
 ### 如何贡献翻译
 
