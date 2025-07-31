@@ -1,0 +1,24 @@
+{
+  "tab": {
+    "Tab": "标签页",
+    "Cursor Tab": "Cursor 标签页"
+  },
+  "api_keys": {
+    "Azure OpenAI": "Azure OpenAI 服务",
+    "AWS Bedrock": "AWS Bedrock 服务",
+    "Access Key ID": "访问密钥 ID",
+    "Secret Access Key": "秘密访问密钥"
+  },
+  "custom": {
+    "Custom Settings": "自定义设置",
+    "Advanced Options": "高级选项",
+    "User Preferences": "用户偏好",
+    "System Configuration": "系统配置"
+  },
+  "extensions": {
+    "Extension Manager": "扩展管理器",
+    "Install Extension": "安装扩展",
+    "Update Extension": "更新扩展",
+    "Remove Extension": "移除扩展"
+  }
+} 

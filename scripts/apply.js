@@ -2,35 +2,46 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-// --- 配置 ---
+const { VersionValidator } = require('./version-validator.js');
+
+// --- 配置常量 ---
 const JS_FILE_NAME = 'workbench.desktop.main.js';
 const JS_FILE_SUB_PATH = path.join('out', 'vs', 'workbench');
 const BACKUP_SUFFIX = '.original';
 const TEMP_SUFFIX = '.temp';
+const MAX_TRANSLATION_LENGTH = 500;
+const MIN_TRANSLATIONS_REQUIRED = 10;
 // --- 配置结束 ---
+
+
 
 /**
  * 日志工具类
  */
 class Logger {
     static info(message) {
-        console.log(`[INFO] ${message}`);
+        console.log(message);
     }
     
     static success(message) {
-        console.log(`[OK] ${message}`);
+        console.log(`\x1b[32m${message}\x1b[0m`);
     }
     
     static warning(message) {
-        console.warn(`[WARN] ${message}`);
+        console.log(`\x1b[33m${message}\x1b[0m`);
     }
     
     static error(message) {
-        console.error(`[ERROR] ${message}`);
+        console.log(`\x1b[31m${message}\x1b[0m`);
     }
     
-    static step(message) {
-        console.log(`[STEP] ${message}`);
+    static debug(message) {
+        if (message.includes('文件验证通过:') || message.includes('成功复制文件:')) {
+            const action = message.includes('文件验证通过:') ? '文件验证通过' : '文件复制成功';
+            console.log(`\x1b[36m[DEBUG]\x1b[0m ${action}`);
+        } else {
+            console.log(`\x1b[36m[DEBUG]\x1b[0m ${message}`);
+        }
     }
 }
 
@@ -48,7 +59,8 @@ class FileUtils {
             if (!fs.existsSync(filePath)) {
                 return null;
             }
-            return fs.readFileSync(filePath, 'utf-8');
+            const content = fs.readFileSync(filePath, 'utf-8');
+            return content;
         } catch (error) {
             Logger.error(`读取文件失败: ${filePath}`);
             Logger.error(`错误详情: ${error.message}`);
@@ -94,7 +106,11 @@ class FileUtils {
             if (content === null) {
                 return false;
             }
-            return this.safeWriteFile(target, content);
+            const result = this.safeWriteFile(target, content);
+            if (result) {
+                Logger.debug(`成功复制文件: ${source} -> ${target}`);
+            }
+            return result;
         } catch (error) {
             Logger.error(`复制文件失败: ${source} -> ${target}`);
             Logger.error(`错误详情: ${error.message}`);
@@ -105,32 +121,36 @@ class FileUtils {
     /**
      * 验证文件完整性
      * @param {string} filePath 文件路径
-     * @param {boolean} isJSFile 是否为JavaScript文件
-     * @returns {boolean} 文件是否有效
+     * @param {boolean} isJSFile 是否为JS文件
+     * @returns {boolean} 是否有效
      */
     static validateFile(filePath, isJSFile = true) {
         try {
-            const content = this.safeReadFile(filePath);
-            if (!content) return false;
-            
-            // 检查文件大小是否合理（至少1KB）
-            const stats = fs.statSync(filePath);
-            const isValidSize = stats.size > 1024;
-            
-            if (!isJSFile) {
-                // 对于非JS文件，只检查大小
-                return isValidSize;
+            if (!fs.existsSync(filePath)) {
+                Logger.debug(`文件不存在: ${filePath}`);
+                return false;
             }
-            
-            // 检查文件是否包含基本的JavaScript结构
-            const hasBasicJSStructure = content.includes('function') || 
-                                     content.includes('var ') || 
-                                     content.includes('const ') || 
-                                     content.includes('let ');
-            
-            return hasBasicJSStructure && isValidSize;
+
+            const stats = fs.statSync(filePath);
+            if (stats.size === 0) {
+                Logger.warning(`文件为空: ${filePath}`);
+                return false;
+            }
+
+            if (isJSFile) {
+                const content = fs.readFileSync(filePath, 'utf-8');
+                // 检查是否为有效的JavaScript文件
+                if (!content.includes('function') && !content.includes('var') && !content.includes('const')) {
+                    Logger.warning(`文件可能不是有效的JavaScript文件: ${filePath}`);
+                    return false;
+                }
+            }
+
+            Logger.debug(`文件验证通过: ${filePath}`);
+            return true;
         } catch (error) {
-            Logger.error(`验证文件失败: ${filePath}`);
+            Logger.error(`文件验证失败: ${filePath}`);
+            Logger.error(`错误详情: ${error.message}`);
             return false;
         }
     }
@@ -245,10 +265,20 @@ class TranslationProcessor {
             
             const groupedTranslations = JSON.parse(content);
             
+            // 验证翻译文件结构
+            if (!this.validateTranslationStructure(groupedTranslations)) {
+                Logger.error('翻译文件结构无效');
+                return null;
+            }
+            
             // 将嵌套的翻译对象扁平化为单层键值对
-            const translations = Object.values(groupedTranslations).reduce((acc, group) => {
-                return { ...acc, ...group };
-            }, {});
+            const translations = this.flattenTranslations(groupedTranslations);
+            
+            // 验证翻译内容
+            const validationResult = this.validateTranslations(translations);
+            if (!validationResult.isValid) {
+                Logger.warning(`翻译验证发现问题: ${validationResult.issues.join(', ')}`);
+            }
             
             Logger.success(`成功加载 ${Object.keys(translations).length} 个翻译条目`);
             return translations;
@@ -256,6 +286,114 @@ class TranslationProcessor {
             Logger.error(`解析翻译文件失败: ${error.message}`);
             return null;
         }
+    }
+
+    /**
+     * 验证翻译文件结构
+     * @param {Object} groupedTranslations 分组翻译对象
+     * @returns {boolean} 是否有效
+     */
+    static validateTranslationStructure(groupedTranslations) {
+        if (!groupedTranslations || typeof groupedTranslations !== 'object') {
+            return false;
+        }
+        
+        // 检查是否至少有一个分组
+        const groups = Object.keys(groupedTranslations);
+        if (groups.length === 0) {
+            return false;
+        }
+        
+        // 检查每个分组是否包含翻译对象
+        for (const groupName of groups) {
+            const group = groupedTranslations[groupName];
+            if (!group || typeof group !== 'object') {
+                Logger.warning(`分组 "${groupName}" 结构无效`);
+                return false;
+            }
+        }
+        
+        return true;
+    }
+
+    /**
+     * 扁平化翻译对象
+     * @param {Object} groupedTranslations 分组翻译对象
+     * @returns {Object} 扁平化翻译对象
+     */
+    static flattenTranslations(groupedTranslations) {
+        const translations = {};
+        
+        for (const [groupName, group] of Object.entries(groupedTranslations)) {
+            for (const [key, value] of Object.entries(group)) {
+                // 跳过空值或无效翻译
+                if (!value || typeof value !== 'string' || value.trim() === '') {
+                    Logger.warning(`跳过无效翻译: ${groupName}.${key}`);
+                    continue;
+                }
+                
+                // 使用完整路径作为键，避免冲突
+                const fullKey = `${groupName}.${key}`;
+                translations[fullKey] = value;
+            }
+        }
+        
+        return translations;
+    }
+
+    /**
+     * 验证翻译内容
+     * @param {Object} translations 翻译对象
+     * @returns {{isValid: boolean, issues: string[], stats: Object}} 验证结果
+     */
+    static validateTranslations(translations) {
+        const issues = [];
+        const stats = {
+            total: Object.keys(translations).length,
+            emptyKeys: 0,
+            emptyValues: 0,
+            specialChars: 0,
+            tooLong: 0,
+            valid: 0
+        };
+        
+        for (const [key, value] of Object.entries(translations)) {
+            // 检查翻译键是否为空
+            if (!key || key.trim() === '') {
+                issues.push(`发现空键`);
+                stats.emptyKeys++;
+                continue;
+            }
+            
+            // 检查翻译值是否为空
+            if (!value || value.trim() === '') {
+                issues.push(`键 "${key}" 的翻译为空`);
+                stats.emptyValues++;
+                continue;
+            }
+            
+            // 检查翻译值是否包含特殊字符
+            if (value.includes('\\n') || value.includes('\\t') || value.includes('\\r')) {
+                issues.push(`键 "${key}" 包含转义字符，可能影响显示`);
+                stats.specialChars++;
+            }
+            
+            // 检查翻译值长度是否合理
+            if (value.length > MAX_TRANSLATION_LENGTH) {
+                issues.push(`键 "${key}" 的翻译过长 (${value.length} 字符)`);
+                stats.tooLong++;
+            }
+            
+            stats.valid++;
+        }
+        
+        Logger.debug(`翻译验证统计: 总计${stats.total}, 有效${stats.valid}, 空键${stats.emptyKeys}, 空值${stats.emptyValues}, 特殊字符${stats.specialChars}, 过长${stats.tooLong}`);
+        
+        return {
+            isValid: issues.length === 0,
+            issues,
+            stats
+        };
     }
 
     /**
@@ -272,39 +410,114 @@ class TranslationProcessor {
      * @param {string} content 原始内容
      * @param {Object} translations 翻译对象
      * @param {string} mode 翻译模式
-     * @returns {{content: string, replacementsCount: number, notFound: string[]}}
+     * @returns {{content: string, replacementsCount: number, notFound: string[], errors: string[]}}
      */
     static applyTranslations(content, translations, mode) {
         let replacementsCount = 0;
         let notFound = [];
+        let errors = [];
         
         Logger.step('正在查找并替换词条...');
         
-        for (const [original, translated] of Object.entries(translations)) {
-            // 使用正则表达式全局替换，确保替换所有出现的地方
-            // 通过 `("...")` 或 `('...')` 来定位，避免错误替换
-            const regex = new RegExp(`(["'])${this.escapeRegExp(original)}\\1`, 'g');
-            const originalContent = content;
+        // 按长度排序，优先替换长字符串，避免部分替换问题
+        const sortedEntries = Object.entries(translations).sort((a, b) => b[0].length - a[0].length);
+        
+        // 批量处理，每100个条目显示一次进度
+        const batchSize = 100;
+        const totalEntries = sortedEntries.length;
+        
+        for (let i = 0; i < sortedEntries.length; i++) {
+            const [original, translated] = sortedEntries[i];
             
-            let replacementString;
-            if (mode === 'bilingual') {
-                // 在替换字符串中，需要转义 `$` 字符，防止其被误认为特殊替换模式
-                const escapedOriginalForReplacement = original.replace(/\$/g, '$$$$');
-                replacementString = `$1${escapedOriginalForReplacement}\\n${translated}$1`;
-            } else { // 'direct' 模式
-                replacementString = `$1${translated}$1`;
+            // 显示进度
+            if (i % batchSize === 0) {
+                const progress = Math.round((i / totalEntries) * 100);
+                Logger.debug(`翻译进度: ${progress}% (${i}/${totalEntries})`);
             }
             
-            content = content.replace(regex, replacementString);
+            try {
+                // 使用正则表达式全局替换，确保替换所有出现的地方
+                // 通过 `("...")` 或 `('...')` 来定位，避免错误替换
+                const regex = new RegExp(`(["'])${this.escapeRegExp(original)}\\1`, 'g');
+                const originalContent = content;
+                
+                let replacementString;
+                if (mode === 'bilingual') {
+                    // 在替换字符串中，需要转义 `$` 字符，防止其被误认为特殊替换模式
+                    const escapedOriginalForReplacement = original.replace(/\$/g, '$$$$');
+                    replacementString = `$1${escapedOriginalForReplacement}\\n${translated}$1`;
+                } else { // 'direct' 模式
+                    replacementString = `$1${translated}$1`;
+                }
+                
+                content = content.replace(regex, replacementString);
 
-            if (originalContent !== content) {
-                replacementsCount++;
-            } else {
-                notFound.push(original);
+                if (originalContent !== content) {
+                    replacementsCount++;
+                } else {
+                    notFound.push(original);
+                }
+            } catch (error) {
+                errors.push(`处理翻译 "${original}" 时出错: ${error.message}`);
             }
         }
 
-        return { content, replacementsCount, notFound };
+        // 记录统计信息
+        Logger.info(`翻译统计: 成功替换 ${replacementsCount} 个，未找到 ${notFound.length} 个，错误 ${errors.length} 个`);
+        
+        if (notFound.length > 0) {
+            Logger.warning(`未找到的翻译: ${notFound.slice(0, 5).join(', ')}${notFound.length > 5 ? '...' : ''}`);
+        }
+        
+        if (errors.length > 0) {
+            Logger.error(`翻译错误: ${errors.slice(0, 3).join(', ')}${errors.length > 3 ? '...' : ''}`);
+        }
+
+        return { content, replacementsCount, notFound, errors };
+    }
+
+    /**
+     * 创建翻译回退机制
+     * @param {Object} translations 主翻译对象
+     * @returns {Object} 包含回退机制的翻译对象
+     */
+    static createFallbackTranslations(translations) {
+        const fallbackTranslations = { ...translations };
+        
+        // 添加常用词汇的回退翻译
+        const commonFallbacks = {
+            'Settings': '设置',
+            'Preferences': '偏好设置',
+            'General': '常规',
+            'Advanced': '高级',
+            'Cancel': '取消',
+            'OK': '确定',
+            'Apply': '应用',
+            'Save': '保存',
+            'Close': '关闭',
+            'Open': '打开',
+            'Edit': '编辑',
+            'Delete': '删除',
+            'Add': '添加',
+            'Remove': '移除',
+            'Search': '搜索',
+            'Find': '查找',
+            'Replace': '替换',
+            'Copy': '复制',
+            'Paste': '粘贴',
+            'Cut': '剪切',
+            'Undo': '撤销',
+            'Redo': '重做'
+        };
+        
+        // 只添加主翻译中没有的常用翻译
+        for (const [key, value] of Object.entries(commonFallbacks)) {
+            if (!fallbackTranslations[key]) {
+                fallbackTranslations[key] = value;
+            }
+        }
+        
+        return fallbackTranslations;
     }
 }
 
@@ -316,9 +529,11 @@ class PatchApplier {
      * 将翻译应用到 Cursor 核心文件
      * @param {('direct'|'bilingual')} mode 翻译模式
      * @param {string} cursorPath Cursor 安装路径
+     * @param {boolean} isFast 是否快速模式
      * @returns {boolean} 是否成功
      */
-    static applyTranslations(mode, cursorPath) {
+    static applyTranslations(mode, cursorPath, isFast = false) {
+        const monitor = new PerformanceMonitor();
         Logger.info(`开始应用中文语言补丁 (模式: ${mode})...`);
         const { targetFile, backupFile } = CursorPathFinder.getPlatformPaths(cursorPath);
 
@@ -329,8 +544,8 @@ class PatchApplier {
             return false;
         }
 
-        // 2. 验证原始文件完整性
-        if (!FileUtils.validateFile(targetFile)) {
+        // 2. 验证原始文件完整性（快速模式跳过详细验证）
+        if (!isFast && !FileUtils.validateFile(targetFile)) {
             Logger.error('目标文件可能已损坏或格式不正确');
             return false;
         }
@@ -341,24 +556,48 @@ class PatchApplier {
         }
 
         // 4. 加载翻译
+        monitor.start('loadTranslations');
         const projectRoot = path.resolve(__dirname, '..');
-        const translations = TranslationProcessor.loadTranslations(projectRoot);
+        let translations = TranslationProcessor.loadTranslations(projectRoot);
+        monitor.end('loadTranslations');
+        
         if (!translations) {
-            return false;
+            Logger.error('无法加载翻译文件，尝试使用回退翻译...');
+            // 尝试使用回退翻译
+            translations = TranslationProcessor.createFallbackTranslations({});
+            if (Object.keys(translations).length === 0) {
+                Logger.error('无法创建回退翻译，操作失败');
+                return false;
+            }
+            Logger.warning('使用基础回退翻译，翻译覆盖率可能较低');
         }
 
         // 5. 从备份文件读取内容，确保每次都从纯净的原始版本开始
+        monitor.start('readFile');
         Logger.step('正在读取原始 JS 文件内容...');
         const content = FileUtils.safeReadFile(backupFile);
+        monitor.end('readFile');
+        
         if (!content) {
             Logger.error('无法读取备份文件');
             return false;
         }
 
         // 6. 执行文本替换
+        monitor.start('applyTranslations');
         const result = TranslationProcessor.applyTranslations(content, translations, mode);
+        monitor.end('applyTranslations');
+        
+        // 7. 处理替换结果
+        if (result.errors.length > 0) {
+            Logger.error(`翻译过程中出现 ${result.errors.length} 个错误`);
+            if (result.errors.length <= 3) {
+                Logger.error(`错误详情: ${result.errors.join(', ')}`);
+            }
+        }
         
         Logger.success(`成功替换 ${result.replacementsCount} 个词条。`);
+        
         if (result.notFound.length > 0) {
             Logger.warning(`有 ${result.notFound.length} 个词条在文件中未找到，这可能是因为 Cursor 版本更新。`);
             if (result.notFound.length <= 10) {
@@ -368,21 +607,119 @@ class PatchApplier {
             }
         }
 
+        // 检查替换效果
         if (result.replacementsCount === 0) {
-            Logger.error('未执行任何替换。请检查:');
-            Logger.error('1. `zh-cn.json` 中的英文原文是否与代码中的完全一致。');
-            Logger.error('2. Cursor 是否为最新版本。');
+            Logger.error('未执行任何替换。可能的原因:');
+            Logger.error('1. `zh-cn.json` 中的英文原文与代码中的不完全一致');
+            Logger.error('2. Cursor 版本更新导致文本变化');
+            Logger.error('3. 翻译文件格式问题');
+            
+            // 尝试使用更宽松的匹配
+            Logger.info('尝试使用更宽松的匹配模式...');
+            const fallbackResult = this.tryFallbackTranslation(content, mode);
+            if (fallbackResult.replacementsCount > 0) {
+                Logger.success(`使用回退模式成功替换 ${fallbackResult.replacementsCount} 个词条`);
+                return this.finalizeTranslation(targetFile, fallbackResult.content, backupFile);
+            }
+            
             return false;
         }
 
-        // 7. 将修改后的内容写回目标文件
+        // 7. 最终化翻译
+        const totalTime = monitor.getTotalTime();
+        Logger.info(`总耗时: ${totalTime}ms`);
+        return this.finalizeTranslation(targetFile, result.content, backupFile, isFast);
+    }
+
+    /**
+     * 尝试回退翻译
+     * @param {string} content 原始内容
+     * @param {string} mode 翻译模式
+     * @returns {{content: string, replacementsCount: number, notFound: string[], errors: string[]}}
+     */
+    static tryFallbackTranslation(content, mode) {
+        Logger.info('尝试使用回退翻译模式...');
+        
+        // 创建更宽松的翻译规则
+        const fallbackTranslations = {
+            'Settings': '设置',
+            'Preferences': '偏好设置',
+            'General': '常规',
+            'Advanced': '高级',
+            'Cancel': '取消',
+            'OK': '确定',
+            'Apply': '应用',
+            'Save': '保存',
+            'Close': '关闭',
+            'Open': '打开',
+            'Edit': '编辑',
+            'Delete': '删除',
+            'Add': '添加',
+            'Remove': '移除',
+            'Search': '搜索',
+            'Find': '查找',
+            'Replace': '替换',
+            'Copy': '复制',
+            'Paste': '粘贴',
+            'Cut': '剪切',
+            'Undo': '撤销',
+            'Redo': '重做',
+            'File': '文件',
+            'View': '视图',
+            'Help': '帮助',
+            'Tools': '工具',
+            'Window': '窗口',
+            'Terminal': '终端',
+            'Debug': '调试',
+            'Run': '运行',
+            'Stop': '停止',
+            'Start': '开始',
+            'End': '结束',
+            'Next': '下一个',
+            'Previous': '上一个',
+            'Back': '返回',
+            'Forward': '前进',
+            'Home': '主页',
+            'Page Up': '向上翻页',
+            'Page Down': '向下翻页',
+            'Insert': '插入',
+            'Enter': '回车',
+            'Tab': '制表符',
+            'Space': '空格',
+            'Escape': '退出',
+            'F1': 'F1',
+            'F2': 'F2',
+            'F3': 'F3',
+            'F4': 'F4',
+            'F5': 'F5',
+            'F6': 'F6',
+            'F7': 'F7',
+            'F8': 'F8',
+            'F9': 'F9',
+            'F10': 'F10',
+            'F11': 'F11',
+            'F12': 'F12'
+        };
+        
+        return TranslationProcessor.applyTranslations(content, fallbackTranslations, mode);
+    }
+
+    /**
+     * 最终化翻译
+     * @param {string} targetFile 目标文件
+     * @param {string} content 翻译后的内容
+     * @param {string} backupFile 备份文件路径
+     * @returns {boolean} 是否成功
+     */
+    static finalizeTranslation(targetFile, content, backupFile, isFast = false) {
+        // 将修改后的内容写回目标文件
         Logger.step(`正在将翻译后的内容写入: ${targetFile}`);
-        if (!FileUtils.safeWriteFile(targetFile, result.content)) {
+        if (!FileUtils.safeWriteFile(targetFile, content)) {
             return false;
         }
 
-        // 8. 验证修改后的文件
-        if (!FileUtils.validateFile(targetFile)) {
+        // 验证修改后的文件（快速模式跳过验证）
+        if (!isFast && !FileUtils.validateFile(targetFile)) {
             Logger.error('修改后的文件验证失败，正在还原...');
             this.restoreFromBackup(targetFile, backupFile);
             return false;
@@ -462,38 +799,76 @@ class PatchApplier {
  * 脚本主入口
  */
 function main() {
-    console.log('--- Cursor 汉化脚本 v2.0 ---');
-    const args = process.argv.slice(2);
+    try {
+        console.log('--- Cursor 汉化脚本 v2.1 ---');
+        const args = process.argv.slice(2);
 
-    const isRestore = args.includes('restore');
-    let mode = 'direct';
-    if (args.includes('bilingual')) {
-        mode = 'bilingual';
-    }
+        const isRestore = args.includes('restore');
+        const isFast = args.includes('fast');
+        let mode = 'direct';
+        if (args.includes('bilingual')) {
+            mode = 'bilingual';
+        }
 
-    // 查找路径参数，它不是 'restore', 'bilingual', 或 'direct'
-    const pathArg = args.find(arg => !['restore', 'bilingual', 'direct'].includes(arg));
+        const pathArg = args.find(arg => !['restore', 'bilingual', 'direct', 'fast'].includes(arg));
 
-    if (isRestore) {
-        Logger.info('模式: 还原');
-    } else {
-        Logger.info(`模式: ${mode === 'bilingual' ? '双语 (保留原文)' : '直接翻译'}`);
-    }
+        if (!isRestore) {
+            try {
+                const TranslationMerger = require('./translation-merger');
+                const merger = new TranslationMerger();
+                const mergeResult = merger.run();
+                
+                if (mergeResult.merged) {
+                    Logger.success(`翻译合并完成，新增 ${mergeResult.stats.added.translations} 个词条`);
+                }
+            } catch (error) {
+                Logger.warning(`翻译合并检查失败: ${error.message}`);
+            }
+        }
 
-    const cursorPath = CursorPathFinder.findCursorPath(pathArg);
-    if (!cursorPath) {
-        process.exit(1);
-    }
+        const cursorPath = CursorPathFinder.findCursorPath(pathArg);
+        
+        if (!cursorPath) {
+            Logger.error('无法找到 Cursor 安装路径');
+            process.exit(1);
+        }
 
-    let success = false;
-    if (isRestore) {
-        success = PatchApplier.restoreOriginal(cursorPath);
-    } else {
-        success = PatchApplier.applyTranslations(mode, cursorPath);
-    }
+        if (!isRestore) {
+            try {
+                const versionInfo = VersionValidator.detectCursorVersion(cursorPath);
+                const compatibility = VersionValidator.validateCompatibility(versionInfo);
+                
+                if (compatibility.isCompatible) {
+                    Logger.success(`版本验证通过 (置信度: ${compatibility.confidence}%)`);
+                } else {
+                    Logger.warning('版本兼容性检查未通过');
+                    
+                    if (process.env.CI || process.env.NON_INTERACTIVE) {
+                        Logger.error('在非交互模式下检测到版本不兼容，退出执行');
+                        process.exit(1);
+                    }
+                }
+            } catch (error) {
+                Logger.warning(`版本验证失败: ${error.message}`);
+            }
+        }
 
-    if (!success) {
-        Logger.error('操作失败，请检查错误信息并重试');
+        let success = false;
+        if (isRestore) {
+            success = PatchApplier.restoreOriginal(cursorPath);
+        } else {
+            success = PatchApplier.applyTranslations(mode, cursorPath, isFast);
+        }
+
+        if (success) {
+            Logger.success('操作成功完成');
+            process.exit(0);
+        } else {
+            Logger.error('操作失败，请检查错误信息并重试');
+            process.exit(1);
+        }
+    } catch (error) {
+        Logger.error(`脚本执行出错: ${error.message}`);
         process.exit(1);
     }
 }
@@ -515,4 +890,4 @@ module.exports = { Logger, FileUtils, CursorPathFinder, TranslationProcessor, Pa
 
 if (require.main === module) {
     main();
-} 
+}

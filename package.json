@@ -5,15 +5,23 @@
     "version": "2.0.0",
     "publisher": "community",
     "scripts": {
+        "start": "node ./scripts/cursor-cli.js",
         "apply": "node ./scripts/apply.js",
         "apply:bilingual": "node ./scripts/apply.js bilingual",
+        "apply:fast": "node ./scripts/apply.js fast",
+        "apply:bilingual:fast": "node ./scripts/apply.js bilingual fast",
         "restore": "node ./scripts/apply.js restore",
         "diagnose": "node ./scripts/diagnose.js",
         "diagnose:fix": "node ./scripts/diagnose.js fix",
         "diagnose:report": "node ./scripts/diagnose.js report",
-        "test": "node ./scripts/test.js"
+        "validate": "node ./scripts/validate-translations.js",
+        "validate:fix": "node ./scripts/validate-translations.js fix",
+        "validate:missing": "node ./scripts/translation-validator.js",
+        "merge": "node ./scripts/translation-merger.js",
+        "version:check": "node ./scripts/version-validator.js",
+        "version:validate": "node ./scripts/version-validator.js"
     },
     "engines": {
         "vscode": "^1.85.0"
     }
-} 
+}

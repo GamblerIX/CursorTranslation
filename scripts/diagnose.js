@@ -21,7 +21,7 @@ class Diagnoser {
             suggestions: []
         };
 
-        Logger.info('[DIAGNOSE] 开始诊断 Cursor 安装状态...');
+
 
         // 检查Cursor路径是否存在
         if (!fs.existsSync(cursorPath)) {
@@ -267,4 +267,4 @@ if (require.main === module) {
     main();
 }
 
-module.exports = { Diagnoser }; 
+module.exports = { Diagnoser };
