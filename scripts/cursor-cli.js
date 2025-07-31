@@ -257,8 +257,24 @@ class CursorCLI {
                 const noJsonContent = fs.readFileSync(noJsonPath, 'utf-8');
                 const noJson = JSON.parse(noJsonContent);
                 
-                if (noJson.statistics && noJson.statistics.total_missing) {
-                    untranslatedCount = noJson.statistics.total_missing;
+                // 新格式的no.json文件：统计原始英文词条与中文翻译不同的数量
+                // 由于no.json现在只包含原始英文词条，需要与zh-cn.json对比
+                Object.keys(noJson).forEach(category => {
+                    if (noJson[category] && typeof noJson[category] === 'object' && 
+                        zhCnJson[category] && typeof zhCnJson[category] === 'object') {
+                        Object.keys(noJson[category]).forEach(key => {
+                            const originalValue = noJson[category][key];
+                            const translatedValue = zhCnJson[category][key];
+                            if (originalValue === translatedValue) {
+                                untranslatedCount++;
+                            }
+                        });
+                    }
+                });
+                
+                // 如果no.json不存在或为空，则未翻译数量为0
+                if (Object.keys(noJson).length === 0) {
+                    untranslatedCount = 0;
                 }
             }
             
